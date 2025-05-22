@@ -1,0 +1,15 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a9a19545b5def5b47b4ee83b5619e17c, type: 3}
+  m_Name: Generic_Cave
+  m_EditorClassIdentifier: 
+  roomReverbPreset: {fileID: 11400000, guid: 8ffc8f5af0f7ddf498ebc4554e84f474, type: 2}
