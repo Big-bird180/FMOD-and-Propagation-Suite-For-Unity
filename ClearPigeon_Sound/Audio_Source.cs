@@ -150,7 +150,7 @@ public class Audio_Source : MonoBehaviour
         SetSoundAsset(_asset);
         SetSoundPreset(_playPreset);
 
-        Audio_SoundManager.Instance?.AddSoundSource(this);
+        Audio_SoundManager.Instance.AddSoundSource(this);
 
         if(_asset.spacialSound)  RegisterWithRooms(); 
     }
@@ -559,8 +559,20 @@ public class Audio_Source : MonoBehaviour
 
     private void RegisterWithRooms()
     {
-        foreach (var roomListener in RoomManager.Instance._roomListener) // Assuming RoomManager keeps track of RoomListeners
+        var manager = RoomManager.Instance;
+       
+
+        var listeners = manager._roomListener;
+       
+
+        foreach (var roomListener in listeners)
         {
+            if (roomListener == null)
+            {
+                UnityEngine.Debug.LogWarning("Found null RoomListener in RoomManager._roomListener.");
+                continue;
+            }
+
             roomListener.OnSourceEnter += OnRoomEnter;
             roomListener.OnSourceExit += OnRoomExit;
         }
@@ -568,7 +580,7 @@ public class Audio_Source : MonoBehaviour
 
     private void UnregisterFromRooms()
     {
-        foreach (var roomListener in RoomManager.Instance._roomListener)
+        foreach (var roomListener in RoomManager.Instance?._roomListener)
         {
             roomListener.OnSourceEnter -= OnRoomEnter;
             roomListener.OnSourceExit -= OnRoomExit;

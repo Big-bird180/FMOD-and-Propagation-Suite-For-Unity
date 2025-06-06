@@ -5,6 +5,7 @@ using UnityEditor;
 using ClearPigeon.Helpers;
 using System;
 using System.Linq;
+using Unity.VisualScripting;
 
 
 //Thank you chatGPT for helping me understand the Dictionary Based graphing system
@@ -45,7 +46,7 @@ namespace ClearPigeon.Audio
         // Game manager instance
         public static RoomManager Instance;
       
-        private void Awake()
+        private void OnEnable()
         {
             if (Instance == null)
             {
@@ -68,16 +69,16 @@ namespace ClearPigeon.Audio
         public void InitializeRooms()
         {
             activeScene = SceneManager.GetActiveScene();
-
+       
+             roomIdDict = new Dictionary<string, Room>();
             _rooms = SceneHelper.GetAllComponentsInScene<Room>(activeScene);
             PortalList = SceneHelper.GetAllComponentsInScene<RoomPortal>(activeScene);
-            _roomListener = SceneHelper.GetAllComponentsInScene<RoomListener>(activeScene);
+           
 
             List<RoomData> roomDataList = new List<RoomData>(); // Store room data
             List<Room> initializedRooms = new List<Room>(); // Store initialized rooms
 
-            // Initialize global room if not present
-            Room globalRoom = InitializeGlobalRoom();
+        
 
             // Initialize all other rooms
             for (int i = 0; i < _rooms.Count; i++)
@@ -88,7 +89,11 @@ namespace ClearPigeon.Audio
 
                 // Initialize room properties
                 _rooms[i].gameObject.layer = _roomLayerIndex;
+                if (!_rooms[i].GetComponent<RoomListener>())
+                {
+                    _rooms[i].AddComponent<RoomListener>();
 
+                }
                 // Set the material for the room's renderer (if it exists)
                 Renderer renderer = _rooms[i].GetComponent<Renderer>();
                 if (renderer != null)
@@ -109,6 +114,7 @@ namespace ClearPigeon.Audio
                     _rooms[i].SetConfig(_defaultConfig);
                 }
 
+
                 // Create room data for this room
                 RoomData roomData = new RoomData(_rooms[i]);
 
@@ -118,10 +124,9 @@ namespace ClearPigeon.Audio
                 // Log if a specific room is being initialized
                 if (_debug)
                 {
-                    if (_rooms[i].roomName == "piss" || _rooms[i].roomName == "Tonmy")
-                    {
+                    
                         Debug.Log($"Room {_rooms[i].roomName} initialized and added to dictionary");
-                    }
+                    
                 }
                 // If room name is empty, print a warning
                 if (string.IsNullOrEmpty(_rooms[i].roomName))
@@ -153,8 +158,10 @@ namespace ClearPigeon.Audio
 
             // Store the initialized rooms list and other data
             _rooms = initializedRooms;
+            // Initialize global room if not present
+            Room globalRoom = InitializeGlobalRoom();
             _globalRoom = globalRoom;
-
+            _roomListener = SceneHelper.GetAllComponentsInScene<RoomListener>(activeScene);
             // Generate connections and update the graph with portals
             GenerateConnections(globalRoom, dictionary, PortalList, _rooms, roomDataList);
         }

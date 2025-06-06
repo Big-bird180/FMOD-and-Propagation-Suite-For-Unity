@@ -3,7 +3,7 @@ using FMOD.Studio;
 using FMODUnity;
 using UnityEngine;
 using UnityEngine.Serialization;
-[CreateAssetMenu(fileName = "SoundAsset", menuName = "Alien Infestation/Sound/Sound Asset", order = 40)]
+[CreateAssetMenu(fileName = "SoundAsset", menuName = "FMOD Sound Propagation/Sound/Sound Asset", order = 40)]
 public class Audio_Asset : ScriptableObject
 {
     public bool loop = false;

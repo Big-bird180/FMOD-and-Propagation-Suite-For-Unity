@@ -27,11 +27,12 @@ public class Audio_SoundManager : MonoBehaviour
     {
         TickDeltaTime = tickRate;
         nextTickTime = Time.time + 0.01f;
-         if (Instance != null && Instance != this)
+        if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
-            return;
+
         }
+        else Instance = this;
         foreach (var room in RoomManager.Instance._roomListener)
         {
             OnPropagationUpdate += room.OnPropagateUpdate;
@@ -46,8 +47,6 @@ public class Audio_SoundManager : MonoBehaviour
     private void Update()
     {
        
-
-        Instance = this;
 
         if (Time.time < nextTickTime) return;
 

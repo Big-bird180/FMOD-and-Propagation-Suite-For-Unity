@@ -14,7 +14,6 @@ namespace ClearPigeon.Audio
         [Header("Room Settings")]
         public bool isInitialized = false;
         public bool isGlobal;
-        public bool isActive;
         [SerializeField]
         private int priority;
 
@@ -38,6 +37,7 @@ namespace ClearPigeon.Audio
         public void Build(RoomData data)
         {
 
+           
             if (!roomListener)
             {
                 roomListener = gameObject.AddComponent<RoomListener>();
