@@ -4,7 +4,6 @@ using UnityEngine.SceneManagement;
 using UnityEditor;
 using ClearPigeon.Helpers;
 using System;
-using ClearPigeon.Managers;
 using System.Linq;
 
 
@@ -22,7 +21,7 @@ namespace ClearPigeon.Audio
         [SerializeField] private int _roomLayerIndex = 9;
         [SerializeField] private int _defaultLayerIndex = 0; // Default layer to reset to
 
-        public SerializableDictionary<Room, RoomData> dictionary = new SerializableDictionary<Room, RoomData>();
+        public Dictionary<Room, RoomData> dictionary = new Dictionary<Room, RoomData>();
         private Dictionary<Room, Bounds> roomBoundsCache = new Dictionary<Room, Bounds>();
         public Room _globalRoom;
 
@@ -36,7 +35,7 @@ namespace ClearPigeon.Audio
         [SerializeField] public Dictionary<int, Room> _roomInstanceID = new Dictionary<int, Room>();
         [SerializeField] List<RoomPortal> PortalList = new List<RoomPortal>();
 
-        [SerializeField] public SerializableDictionary<string, Room> roomIdDict;
+        [SerializeField] public Dictionary<string, Room> roomIdDict;
 
 
         public bool initialized = false;
@@ -190,7 +189,7 @@ namespace ClearPigeon.Audio
             return globalRoom;
         }
 
-        void GenerateConnections(Room globalRoom, SerializableDictionary<Room, RoomData> roomGraph, List<RoomPortal> portalList, List<Room> roomList, List<RoomData> roomData)
+        void GenerateConnections(Room globalRoom, Dictionary<Room, RoomData> roomGraph, List<RoomPortal> portalList, List<Room> roomList, List<RoomData> roomData)
         {
             // This dictionary is used to temporarily store room data, but we should add room data to the global dictionary (dictionary)
             foreach (Room room in roomList)

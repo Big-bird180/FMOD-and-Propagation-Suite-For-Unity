@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
 using ClearPigeon.Audio;
-using ClearPigeon.Managers;
 using System;
 
 [RequireComponent(typeof(Collider))]
@@ -35,8 +34,8 @@ public class RoomListener : MonoBehaviour
 
     public void OnPropagateUpdate(bool instant)
     {
-        RefreshListeners(Global_GameManager.Instance.SoundManager.activeListeners);
-        RefreshSources(Global_GameManager.Instance.SoundManager.sourceList);
+        RefreshListeners(Audio_SoundManager.Instance.activeListeners);
+        RefreshSources(Audio_SoundManager.Instance.sourceList);
     }
 
     public void RefreshListeners(List<Audio_SoundListener> allListeners)

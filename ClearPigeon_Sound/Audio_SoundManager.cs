@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using ClearPigeon.Audio;
-using ClearPigeon.Managers;
 
 public class Audio_SoundManager : MonoBehaviour
 {
@@ -13,7 +12,7 @@ public class Audio_SoundManager : MonoBehaviour
 
     public List<Audio_Source> sourceList = new();
     public List<Audio_SoundListener> activeListeners = new();
-
+    public Transform player => GameObject.Find("Player").transform;
 
 
     private int SoundSourceCount => sourceList.Count;
@@ -76,22 +75,12 @@ public class Audio_SoundManager : MonoBehaviour
 
     public static void UpdatePropagation()
     {
-        var manager = Global_GameManager.Instance?.SoundManager;
+        var manager = Audio_SoundManager.Instance;
         if (manager.SoundSourceCount <= 0) return;
 
         OnPropagationUpdate?.Invoke(true);
         OnUpdate?.Invoke(TickDeltaTime);
     }
-
- 
-
-   
-
-
-  
-
-   
-
 
     public void AddSoundSource(Audio_Source source)
     {

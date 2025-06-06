@@ -17,7 +17,7 @@ namespace ClearPigeon.Audio
     }
 
 
-    public class RoomPortal : MonoBehaviour, ISaveable
+    public class RoomPortal : MonoBehaviour
     {
         public string _portalID;
         public Room room1;
@@ -78,21 +78,7 @@ namespace ClearPigeon.Audio
         {
             targetPortal.portalDistanceDict[targetPortal] = Vector3.Distance(this.transform.position, targetPortal.transform.position);
         }
-        [ExecuteInEditMode]
-        public string GenerateUniqueID()
-        {
-            string uniqueID = "portal" + "_" + System.Guid.NewGuid().ToString(); // Use GUID for uniqueness
-            UnityEngine.Debug.Log(uniqueID);
-            _portalID = uniqueID; // Assign the generated ID
-            return uniqueID;
-        }
-
-        [ExecuteInEditMode]
-        void OnValidate()
-        {
-            if (_portalID == String.Empty) GenerateUniqueID();
-        }
-
+        
         // This method will draw the debug icon in the Scene view
         private void OnDrawGizmos()
         {

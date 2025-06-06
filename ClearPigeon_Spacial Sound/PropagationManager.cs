@@ -18,7 +18,7 @@ public class PropagationManager
 
     public PropagationManager() { }
 
-    private void SetupRooms(SerializableDictionary<Room, RoomData> roomGraph)
+    private void SetupRooms(Dictionary<Room, RoomData> roomGraph)
     {
         roomToIndex.Clear();
         roomCount = 0;
@@ -36,7 +36,7 @@ public class PropagationManager
     public List<Room> FindPath(
      Room startRoom,
      Room targetRoom,
-     SerializableDictionary<Room, RoomData> roomGraph,
+     Dictionary<Room, RoomData> roomGraph,
      Audio_Asset asset,
      Audio_Source source,
      Vector3 listenerPosition,

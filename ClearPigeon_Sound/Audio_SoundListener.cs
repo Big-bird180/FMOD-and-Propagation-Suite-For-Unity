@@ -2,7 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using ClearPigeon.Audio;
 using UnityEngine;
-using ClearPigeon.Managers;
+
 public class Audio_SoundListener : MonoBehaviour
 {
     public Room room => RoomManager.Instance.GetCurrentRoom(this.transform.position);
@@ -14,11 +14,11 @@ public class Audio_SoundListener : MonoBehaviour
 
     void Awake()
     {
-        Global_GameManager.Instance.SoundManager.AddSoundListener(this);
+        Audio_SoundManager.Instance.AddSoundListener(this);
     }
 
      void OnDestroy()
      {
-         Global_GameManager.Instance.SoundManager.RemoveSoundListener(this);
+        Audio_SoundManager.Instance.RemoveSoundListener(this);
      }
 }

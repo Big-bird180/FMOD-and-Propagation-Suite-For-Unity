@@ -1,5 +1,5 @@
 using ClearPigeon.Audio;
-using ClearPigeon.Managers;
+
 using FMOD.Studio;
 using FMOD;
 using UnityEngine;
@@ -145,7 +145,7 @@ public class Audio_Source : MonoBehaviour
         SetSoundAsset(_asset);
         SetSoundPreset(_playPreset);
 
-        Global_GameManager.Instance?.SoundManager.AddSoundSource(this);
+        Audio_SoundManager.Instance?.AddSoundSource(this);
 
         if(_asset.spacialSound)  RegisterWithRooms(); 
     }
@@ -155,9 +155,9 @@ public class Audio_Source : MonoBehaviour
         Stop();
         Reset();
 
-        if (Global_GameManager.Instance?.SoundManager != null)
+        if (Audio_SoundManager.Instance != null)
         {
-            Global_GameManager.Instance.SoundManager.RemoveSoundSource(this);
+            Audio_SoundManager.Instance.RemoveSoundSource(this);
         }
 
         if (_asset.spacialSound) UnregisterFromRooms();
@@ -424,8 +424,8 @@ public class Audio_Source : MonoBehaviour
             return;
 
         Vector3 playerPos = Vector3.zero;
-        if (Global_GameManager.Instance != null)
-             playerPos = Global_GameManager.Instance.Player.transform.position;
+       
+             playerPos = Audio_SoundManager.Instance.player.position;
 
         Room playerRoom = RoomManager.Instance.GetCurrentRoom(playerPos);
 
@@ -494,7 +494,7 @@ public class Audio_Source : MonoBehaviour
         Vector3 sourcePos = transform.position;
         float rangeSqr = _asset.RangeMax * _asset.RangeMax;
 
-        foreach (var listener in Global_GameManager.Instance.SoundManager.activeListeners)
+        foreach (var listener in Audio_SoundManager.Instance.activeListeners)
         {
             if ((listener.transform.position - sourcePos).sqrMagnitude <= rangeSqr)
             {
