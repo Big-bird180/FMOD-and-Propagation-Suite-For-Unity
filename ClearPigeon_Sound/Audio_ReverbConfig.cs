@@ -3,7 +3,7 @@ using UnityEditor;
 using UnityEngine;
 
 
-[CreateAssetMenu(fileName = "Reverb Config", menuName = "Alien Infestation/Sound/Reverb Config")]
+[CreateAssetMenu(fileName = "Reverb Config", menuName = "FMOD Sound Propagation/Sound/Reverb Config")]
 
 public class Audio_ReverbConfig : ScriptableObject
 {

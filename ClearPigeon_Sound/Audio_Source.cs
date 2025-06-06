@@ -6,6 +6,7 @@ using UnityEngine;
 using System;
 using System.Collections.Generic;
 using System.Collections;
+using UnityEditor;
 
 public class Audio_Source : MonoBehaviour
 {
@@ -122,11 +123,15 @@ public class Audio_Source : MonoBehaviour
         Gizmos.DrawWireSphere(position, _asset.RangeMax);
 
     }
+
+#if UNITY_EDITOR
     private void OnDrawGizmos()
     {
-        Gizmos.DrawIcon(this.transform.position, "Audio_Icon.png");
+        Gizmos.DrawIcon(this.transform.position, "/C.P.-Room-Propagation-FMOD-/Gizmos/Audio_Icon.png", true);
     }
-   
+
+
+#endif
 
     #endregion
 
