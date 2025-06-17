@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections;
 using UnityEngine;
 using ClearPigeon.Audio;
 
@@ -23,13 +24,14 @@ public class Audio_SoundManager : MonoBehaviour
     public float tickRate = 1f / 10f;
     public static float TickDeltaTime { get; private set; }
 
-    private void OnEnable()
+    private void Awake()
     {
         TickDeltaTime = tickRate;
         nextTickTime = Time.time + 0.01f;
         if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
+<<<<<<< Updated upstream
 
         }
         else Instance = this;
@@ -37,12 +39,32 @@ public class Audio_SoundManager : MonoBehaviour
         {
             OnPropagationUpdate += room.OnPropagateUpdate;
         }
+=======
+>>>>>>> Stashed changes
 
-      
+        }
+        else
+        {
+            Instance = this;
+        }
+        StartCoroutine(Start());
+
 
         //InitializeReverbDSPs();
 
     }
+
+    private IEnumerator Start()
+    {
+        // Wait for RoomManager to initialize fully
+        yield return new WaitUntil(() => RoomManager.Instance != null && RoomManager.Instance._roomListener != null);
+
+        foreach (var room in RoomManager.Instance._roomListener)
+        {
+            OnPropagationUpdate += room.OnPropagateUpdate;
+        }
+    }
+
 
     private void Update()
     {

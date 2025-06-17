@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System;
 using UnityEngine;
 using ClearPigeon.Audio;
 
@@ -18,6 +19,7 @@ public class PropagationManager
 
     public PropagationManager() { }
 
+
     private void SetupRooms(Dictionary<Room, RoomData> roomGraph)
     {
         roomToIndex.Clear();
@@ -26,6 +28,7 @@ public class PropagationManager
         {
             if (roomCount >= MaxRooms) break;
             var room = kv.Key;
+            visited[roomCount] = false;
             roomToIndex[room] = roomCount;
             indexToRoom[roomCount] = room;
             indexToData[roomCount] = kv.Value;
@@ -34,24 +37,30 @@ public class PropagationManager
     }
 
     public List<Room> FindPath(
-     Room startRoom,
-     Room targetRoom,
-     Dictionary<Room, RoomData> roomGraph,
-     Audio_Asset asset,
-     Audio_Source source,
-     Vector3 listenerPosition,
-     out float totalOcclusion,
-     bool debug = false,
-     int maxDepths = 10,
-     int portalOffset = 0,
-     float maxCost = 120f,
-     bool cheapOcclusion = false) 
-    { 
+        Room startRoom,
+        Room targetRoom,
+        Dictionary<Room, RoomData> roomGraph,
+        Audio_Asset asset,
+        Audio_Source source,
+        Vector3 listenerPosition,
+        out float totalOcclusion,
+        bool debug = false,
+        int maxDepths = 10,
+        int portalOffset = 0,
+        float maxCost = 120f,
+        bool cheapOcclusion = false)
+    {
         totalOcclusion = 0f;
         if (startRoom == null || targetRoom == null || roomGraph == null)
         {
             Debug.LogError("Invalid input to FindPath");
             return null;
+        }
+
+        if (startRoom == targetRoom)
+        {
+            totalOcclusion = 0f;
+            return new List<Room> { startRoom };
         }
 
         SetupRooms(roomGraph);
@@ -79,16 +88,24 @@ public class PropagationManager
         {
             PriorityQueue<Room> queue = new PriorityQueue<Room>();
             queue.Enqueue(startRoom, 0f);
-            visited[startIdx] = true;
             roomDepth[startIdx] = 0;
             roomOcclusion[startIdx] = 0f;
 
             while (queue.Count > 0)
             {
-                var current = queue.Dequeue();
+                var (current, priority) = queue.DequeueWithPriority();
                 int curIdx = roomToIndex[current];
+
+                if (priority > pathCost[curIdx])
+                    continue;
+
                 int curDepth = roomDepth[curIdx];
                 float curOcc = roomOcclusion[curIdx];
+
+                if (visited[curIdx])
+                    continue;
+
+                visited[curIdx] = true;
 
                 if (current == targetRoom)
                     break;
@@ -99,60 +116,107 @@ public class PropagationManager
                     continue;
                 }
 
-                var data = indexToData[curIdx];
-                ProcessPortals(current, data, asset, listenerPosition, ref queue, ref totalOcclusion, curIdx, curDepth, curOcc, portalOffset, maxCost);
+                ProcessPortals(current,
+                               indexToData[curIdx],
+                               asset, source,
+                               listenerPosition,
+                               ref queue,
+                               ref totalOcclusion,
+                               curIdx,
+                               curDepth,
+                               curOcc,
+                               portalOffset,
+                               maxCost);
             }
         }
-        if (!visited[targetIdx])
+
+        if (!visited[roomToIndex[targetRoom]])
         {
             if (debug) Debug.LogError("No path found.");
             return null;
         }
 
-        return ReconstructPath(startIdx, targetIdx, out totalOcclusion, portalOffset, maxDepths, asset, listenerPosition, targetRoom, debug);
+        return ReconstructPath(
+            roomToIndex[startRoom],
+            roomToIndex[targetRoom],
+            out totalOcclusion,
+            portalOffset,
+            maxDepths,
+            asset,
+            listenerPosition,
+            targetRoom,
+            debug);
     }
 
-    private void ProcessPortals(Room current, RoomData data, Audio_Asset asset, Vector3 listenerPosition, ref PriorityQueue<Room> queue, ref float totalOcclusion, int curIdx, int curDepth, float curOcc, int portalOffset, float maxCost)
+
+    private void ProcessPortals(
+        Room current,
+        RoomData data,
+        Audio_Asset asset,
+        Audio_Source source,
+        Vector3 listenerPosition,
+        ref PriorityQueue<Room> queue,
+        ref float totalOcclusion,
+        int curIdx,
+        int curDepth,
+        float curOcc,
+        int portalOffset,
+        float maxCost)
     {
+        // 1) Pick the best portal per neighbor, storing both portal and its precomputed cost
+        var bestPortals = new Dictionary<Room, (RoomPortal portal, float cost)>();
         foreach (var p in data.portals)
         {
             if (p.room1 == null || p.room2 == null) continue;
-            bool isOpen = p._soundBlocker == null || p._soundBlocker.IsOpen;
-            if (!isOpen) continue;
-
             var nbr = p.room1 == current ? p.room2 : p.room1;
-            int nbrIdx = roomToIndex[nbr];
-            if (visited[nbrIdx]) continue;
-            EnqueueNeighbor(curIdx, nbr, nbrIdx, p, asset, curDepth, curOcc, ref queue, listenerPosition, maxCost);
+            if (nbr == null) continue;
+
+            float cost = CalculatePortalCost(p, source, listenerPosition);
+            if (!bestPortals.TryGetValue(nbr, out var best) || cost < best.cost)
+                bestPortals[nbr] = (p, cost);
         }
 
-        foreach (var p in data.portals)
+        // 2) Enqueue using that exact portal and cost
+        foreach (var kv in bestPortals)
         {
-            if (p.room1 == null || p.room2 == null) continue;
-            bool isOpen = p._soundBlocker == null || p._soundBlocker.IsOpen;
-            if (isOpen) continue;
-
-            var nbr = p.room1 == current ? p.room2 : p.room1;
-            int nbrIdx = roomToIndex[nbr];
-            if (visited[nbrIdx]) continue;
-            EnqueueNeighbor(curIdx, nbr, nbrIdx, p, asset, curDepth, curOcc, ref queue, listenerPosition, maxCost);
+            int nbrIdx = roomToIndex[kv.Key];
+            EnqueueNeighbor(curIdx,
+                            kv.Key,
+                            nbrIdx,
+                            kv.Value.portal,
+                            kv.Value.cost,
+                            ref queue,
+                            maxCost);
         }
 
+        // 3) Fallback to non-portal neighbors if needed
         foreach (var nbr in data.neighbors)
         {
-            if (nbr == null) continue;
+            if (nbr == null || bestPortals.ContainsKey(nbr)) continue;
             int nbrIdx = roomToIndex[nbr];
-            if (visited[nbrIdx]) continue;
-            EnqueueNeighbor(curIdx, nbr, nbrIdx, null, asset, curDepth, curOcc, ref queue, listenerPosition, maxCost);
+            EnqueueNeighbor(curIdx,
+                            nbr,
+                            nbrIdx,
+                            null,
+                            1f,
+                            ref queue,
+                            maxCost);
         }
     }
 
-    private void EnqueueNeighbor(int curIdx, Room nbr, int nbrIdx, RoomPortal portal, Audio_Asset asset, int curDepth, float curOcc, ref PriorityQueue<Room> queue, Vector3 listenerPosition, float maxCost)
+    // Updated signature: accepts precomputed portalCost
+    private void EnqueueNeighbor(
+        int curIdx,
+        Room nbr,
+        int nbrIdx,
+        RoomPortal portal,
+        float portalCost,
+        ref PriorityQueue<Room> queue,
+        float maxCost)
     {
-        float cost = CalculatePortalCost(portal, listenerPosition);
-        float newCost = pathCost[curIdx] + cost;
+        float depthPenalty = Mathf.Min(roomDepth[curIdx] * 0.1f, 1f);
+        float newCost = pathCost[curIdx] + portalCost + depthPenalty;
 
-        // Ensure we skip any paths that exceed the max allowed cost
         if (newCost > maxCost)
             return;
 
@@ -160,41 +224,58 @@ public class PropagationManager
         {
             cameFrom[nbrIdx] = curIdx;
             exitPortals[nbrIdx] = portal;
-            roomDepth[nbrIdx] = curDepth + 1;
+            roomDepth[nbrIdx] = roomDepth[curIdx] + 1;
             pathCost[nbrIdx] = newCost;
             roomOcclusion[nbrIdx] = 0f;
 
-            if (!visited[nbrIdx])
-            {
-                visited[nbrIdx] = true;
-                queue.Enqueue(nbr, newCost);
-            }
+            queue.Enqueue(nbr, newCost);
         }
     }
 
-    private float CalculatePortalCost(RoomPortal portal, Vector3 listenerPosition)
+    private float CalculatePortalCost(RoomPortal portal, Audio_Source source, Vector3 listenerPosition)
     {
-        if (portal == null) return 1f;
+        if (portal == null) return 100f;
 
-        float baseWeight = portal._weight;
-        float scaleFactor = portal.transform.lossyScale.magnitude;
+        // === Tunables ===
+        const float openPenalty = 1f;
+        const float closedPenalty = 4f;
+        const float distanceWeight = 1f;
+        const float frequencyWeight = 0.7f;
+        const float minCost = 0.5f;
+        const float maxCost = 100f;
+
+        // === Portal properties ===
+        Vector3 portalPos = portal.transform.position;
+        float scaleMagnitude = portal.transform.lossyScale.magnitude;
+        float scaleFactor = Mathf.Clamp01(1f / (scaleMagnitude * scaleMagnitude)); // Normalized: [0..1], large portal = cheap
+
         bool isOpen = portal._soundBlocker == null || portal._soundBlocker.IsOpen;
-        float openPenalty = isOpen ? 1f : 2f;
+        float attenuation = Mathf.Max(portal._soundBlocker?.attinuationAggression ?? 1f, 0.01f); // Avoid divide-by-zero
 
-        float dist = portal.transform != null
-            ? Vector3.Distance(listenerPosition, portal.transform.position)
-            : 1f;
+        float opennessPenalty = isOpen ? openPenalty : closedPenalty;
+        float frequencyFactor = isOpen ? 1f : 1.25f;
 
-        float distWeight = Mathf.Clamp(dist / portal._soundBlocker.attinuationAggression, 0.5f, 1.5f); // relaxed
+        float sourceDist = Vector3.Distance(source.transform.position, portalPos);
+        float listenerDist = Vector3.Distance(listenerPosition, portalPos);
+        float weightedDist = (sourceDist * 0.4f) + (listenerDist * 0.6f);
 
-        float frequencyFactor = isOpen ? 1f : 1.2f;
+        // === Normalize distance impact ===
+        float distancePenalty = Mathf.Clamp01(weightedDist / 20f); // Assume 20m is "long range"
 
-        // Prefer larger portals by reducing cost inversely with the scale
-        float scaleBonus = Mathf.Clamp(1f / scaleFactor, 0.1f, 10f); // Inverse scaling for larger portals
+        // === Final cost formula ===
+        float cost = (opennessPenalty)
+                     + (distancePenalty * distanceWeight)
+                     + (frequencyFactor * frequencyWeight);
 
-        float rawCost = (baseWeight + openPenalty + (distWeight /5) + frequencyFactor);
-        return rawCost * scaleBonus; // Multiply by scaleBonus to lower the cost for larger portals
+        cost = Mathf.Clamp(cost, minCost, maxCost) + portal._soundBlocker.occlusionAmount;
+
+        Debug.Log($"Portal: {portal.name}, Cost: {cost:F2}, Dist: {weightedDist:F2}, Open: {isOpen}, Scale: {scaleMagnitude:F2}");
+
+        return cost;
     }
+
+
+
 
 
     private List<Room> ReconstructPath(int startIdx, int targetIdx, out float totalOcclusion, int portalOffset, int maxDepth, Audio_Asset asset, Vector3 listenerPosition, Room listenerRoom, bool debug)
@@ -233,17 +314,17 @@ public class PropagationManager
             {
                 float distanceWeight = 1f;
                 if (portal.transform != null)
-                {                                                                                                                  
-                   float dist =  (listenerPosition - portal.transform.position).sqrMagnitude;
+                {
+                    float dist = (listenerPosition - portal.transform.position).sqrMagnitude;
 
-                                                                                                  // multiplier to help define the distance
-                                                                                                                    // v
+                    // multiplier to help define the distance
+                    // v
                     // the below equation controls how much distance weighs on the effect.  (dist    /   10f) *       2f +      1f; < kinda just extra help
-                                                                                        //   ^            ^
-                                                                                        // float     denominator  (aggresiveness)
+                    //   ^            ^
+                    // float     denominator  (aggresiveness)
 
-                    distanceWeight = Mathf.Clamp01(dist / sb.attinuationAggression) * sb.attinuationInfluence + 1f; 
-                                                                               
+                    distanceWeight = Mathf.Clamp01(dist / sb.attinuationAggression) * sb.attinuationInfluence + 1f;
+
                 }
 
                 float depthWeight = 1f - (step - 1f) / maxDepth;
@@ -259,7 +340,7 @@ public class PropagationManager
                     var blocker = portal._soundBlocker;
                     string state = blocker == null ? "no blocker" : (blocker.IsOpen ? "open" : "closed");
 
-                    Debug.Log($"Asset: {asset} -- Portal '{portalName}' was {state} -- occlusion: {weightedOcclusion:F2} (depthWeight: {depthWeight:F2}, distWeight: {distanceWeight:F2}) at step {step}");
+                   // Debug.Log($"Asset: {asset} -- Portal '{portalName}' was {state} -- occlusion: {weightedOcclusion:F2} (depthWeight: {depthWeight:F2}, distWeight: {distanceWeight:F2}) at step {step}");
                 }
 
                 if (totalOcclusion >= maxOcclusion)
@@ -281,46 +362,127 @@ public class PropagationManager
 
     public class PriorityQueue<T>
     {
-        private readonly List<(T item, float priority)> _elements = new();
+        private List<Node> _heap = new();
+        private Dictionary<T, int> _itemToIndex = new();
 
-        public int Count => _elements.Count;
+        public int Count => _heap.Count;
 
         public void Enqueue(T item, float priority)
         {
-            _elements.Add((item, priority));
-            int c = _elements.Count - 1;
-            while (c > 0 && _elements[c].priority < _elements[(c - 1) / 2].priority)
+            if (_itemToIndex.TryGetValue(item, out int index))
             {
-                (_elements[c], _elements[(c - 1) / 2]) = (_elements[(c - 1) / 2], _elements[c]);
-                c = (c - 1) / 2;
+                // Item already exists, check if priority should be updated
+                if (priority >= _heap[index].Priority)
+                    return;
+
+                _heap[index] = new Node(item, priority);
+                SiftUp(index);
+                SiftDown(index);
+            }
+            else
+            {
+                _heap.Add(new Node(item, priority));
+                _itemToIndex[item] = _heap.Count - 1;
+                SiftUp(_heap.Count - 1);
             }
         }
 
-        public T Dequeue()
+        public (T item, float priority) DequeueWithPriority()
         {
-            int li = _elements.Count - 1;
-            var frontItem = _elements[0].item;
-            _elements[0] = _elements[li];
-            _elements.RemoveAt(li);
+            if (_heap.Count == 0)
+                throw new InvalidOperationException("PriorityQueue is empty.");
 
-            --li;
-            int pi = 0;
-            while (true)
+            var node = _heap[0];
+            _itemToIndex.Remove(node.Item);
+
+            int last = _heap.Count - 1;
+            if (last > 0)
             {
-                int ci = pi * 2 + 1;
-                if (ci > li) break;
-                int rc = ci + 1;
-                if (rc <= li && _elements[rc].priority < _elements[ci].priority) ci = rc;
-                if (_elements[pi].priority <= _elements[ci].priority) break;
-                (_elements[pi], _elements[ci]) = (_elements[ci], _elements[pi]);
-                pi = ci;
+                _heap[0] = _heap[last];
+                _itemToIndex[_heap[0].Item] = 0;
+                _heap.RemoveAt(last);
+                SiftDown(0);
             }
-            return frontItem;
+            else
+            {
+                _heap.RemoveAt(last);
+            }
+
+            return (node.Item, node.Priority);
         }
 
-        public bool Contains(T item)
+
+        public bool Contains(T item) => _itemToIndex.ContainsKey(item);
+
+        public void Clear()
         {
-            return _elements.Exists(e => EqualityComparer<T>.Default.Equals(e.item, item));
+            _heap.Clear();
+            _itemToIndex.Clear();
+        }
+
+        public float GetPriority(T item)
+        {
+            if (_itemToIndex.TryGetValue(item, out int index))
+                return _heap[index].Priority;
+
+            return float.MaxValue;
+        }
+
+        private void SiftUp(int index)
+        {
+            var node = _heap[index];
+            while (index > 0)
+            {
+                int parent = (index - 1) >> 1;
+                if (_heap[parent].Priority <= node.Priority)
+                    break;
+
+                _heap[index] = _heap[parent];
+                _itemToIndex[_heap[parent].Item] = index;
+                index = parent;
+            }
+            _heap[index] = node;
+            _itemToIndex[node.Item] = index;
+        }
+
+        private void SiftDown(int index)
+        {
+            var node = _heap[index];
+            int half = _heap.Count >> 1;
+
+            while (index < half)
+            {
+                int left = (index << 1) + 1;
+                int right = left + 1;
+                int smallest = left;
+
+                if (right < _heap.Count && _heap[right].Priority < _heap[left].Priority)
+                    smallest = right;
+
+                if (_heap[smallest].Priority >= node.Priority)
+                    break;
+
+                _heap[index] = _heap[smallest];
+                _itemToIndex[_heap[smallest].Item] = index;
+                index = smallest;
+            }
+
+            _heap[index] = node;
+            _itemToIndex[node.Item] = index;
+        }
+
+        private struct Node
+        {
+            public T Item { get; }
+            public float Priority { get; }
+
+            public Node(T item, float priority)
+            {
+                Item = item;
+                Priority = priority;
+            }
         }
     }
+
+
 }

@@ -24,6 +24,19 @@ public class Audio_Source : MonoBehaviour
         public Room overrideRoom; 
     }
 
+    // Key = tuple of (sourceRoom, listenerRoom)
+    private Dictionary<(Room, Room), CachedPath> sharedPathCache = new Dictionary<(Room, Room), CachedPath>();
+
+    private class CachedPath
+    {
+        public List<Room> path;           // The cached path (room list)
+        public float occlusion;           // Cached occlusion value for that path
+        public Vector3 lastListenerPosition;  // Last listener position used for path calc
+        public Room lastListenerRoom;          // Last listener room
+        public Room lastSourceRoom;            // Last source room
+    }
+
+
     #endregion
 
     #region Fields
@@ -40,6 +53,7 @@ public class Audio_Source : MonoBehaviour
     [SerializeField] private Audio_Asset _asset;
     [SerializeField] private GameObject _owner;
     [Range(0, 1)] public float volume = 1f;
+   
     [SerializeField] private float transitionDuration = 45f;
 
     // Internal FMOD instance
@@ -51,13 +65,12 @@ public class Audio_Source : MonoBehaviour
     private readonly Dictionary<Audio_SoundListener, Room> listenerRoomCache = new();
     private readonly HashSet<Room> visitedRooms = new();
     private readonly List<Audio_SoundListener> foundListeners = new();
- 
+    private float previousVolume = 0f;
     // State
     private Vector3 lastPosition;
     private float transitionTimer;
     private float _targetOcclusion;
-    private float _targetVolume;
-    private float appliedVolume;
+    private float appliedOcclusion;
 
     private bool isPlaying;
     private bool HasPropagated = false;
@@ -86,25 +99,6 @@ public class Audio_Source : MonoBehaviour
         {
             ChangeReverbPreset(_soundInstance, currentReverbConfig);
         }
-
-
-        if (_asset.spacialSound)
-        {
-            Vector3 currentPosition = transform.position;
-            if (currentPosition != lastPosition)
-            {
-                _soundInstance.set3DAttributes(new FMOD.ATTRIBUTES_3D
-                {
-                    position = FMODUnity.RuntimeUtils.ToFMODVector(currentPosition),
-                    velocity = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.zero),
-                    forward = FMODUnity.RuntimeUtils.ToFMODVector(transform.forward),
-                    up = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.up)
-                });
-
-                lastPosition = currentPosition;
-            }
-        }
-    
     }
 
     private void OnDrawGizmosSelected()
@@ -174,7 +168,7 @@ public class Audio_Source : MonoBehaviour
         UnityEngine.Debug.Log("PropagationManager reset!");
     }
 
-    private void SetSoundAsset(Audio_Asset asset)
+    public void SetSoundAsset(Audio_Asset asset)
     {
         _asset = asset;
         _soundInstance = FMODUnity.RuntimeManager.CreateInstance(_asset.eventReference);
@@ -199,7 +193,6 @@ public class Audio_Source : MonoBehaviour
     #region Playback
 
     public void StartPlay() => Play();
-
     public void Play()
     {
         if (_asset == null || !_soundInstance.isValid()) return;
@@ -207,10 +200,14 @@ public class Audio_Source : MonoBehaviour
 
         _soundInstance.start();
         UnityEngine.Debug.Log("Sound Started!");
-        SetTargetVolume(volume);
+        SetVolume(volume);
+
+        if (currentReverbConfig != null)
+            ChangeReverbPreset(_soundInstance, currentReverbConfig);
 
         HasPropagated = false;
     }
+
 
     public void SetOwner(GameObject owner)
     {
@@ -231,12 +228,6 @@ public class Audio_Source : MonoBehaviour
         UnityEngine.Debug.Log("Sound Stopped and Released!");
 
         Reset();
-    }
-
-    public void SetTargetVolume(float targetVol)
-    {
-        _targetVolume = Mathf.Clamp01(targetVol);
-        SetVolume(_targetVolume);
     }
 
     public void SetVolume(float newVolume)
@@ -374,6 +365,8 @@ public class Audio_Source : MonoBehaviour
 
     public void OnUpdate(float deltaTime)
     {
+        if (this == null || Audio_SoundManager.Instance == null) return;
+
         if (!propagation.enabled || !_asset.spacialSound)
             return;
 
@@ -384,13 +377,36 @@ public class Audio_Source : MonoBehaviour
             return;
         }
 
-
         if (propagation.repropagate || _asset.loop)
         {
             HasPropagated = false;
             Repropagate();
         }
 
+        if (_asset.spacialSound)
+        {
+            Vector3 currentPosition = Vector3.zero;
+            if (transform != null) currentPosition = transform.position;
+
+            if (currentPosition != lastPosition)
+            {
+                _soundInstance.set3DAttributes(new FMOD.ATTRIBUTES_3D
+                {
+                    position = FMODUnity.RuntimeUtils.ToFMODVector(currentPosition),
+                    velocity = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.zero),
+                    forward = FMODUnity.RuntimeUtils.ToFMODVector(transform.forward),
+                    up = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.up)
+                });
+
+                lastPosition = currentPosition;
+            }
+        }
+
+        if(previousVolume != volume)
+        {
+            SetVolume(volume);
+            previousVolume = volume;
+        }
         ApplyOcclusion(_targetOcclusion);
     }
 
@@ -401,7 +417,7 @@ public class Audio_Source : MonoBehaviour
        
         Propagate();
         HasPropagated = true;
-        SetTargetVolume(volume);
+       
         
     }
 
@@ -423,45 +439,102 @@ public class Audio_Source : MonoBehaviour
 
     private void OnPropagate()
     {
-        visitedRooms.Clear();
-
         if (this == null || !gameObject.activeInHierarchy || HasPropagated)
             return;
 
-        Vector3 playerPos = Vector3.zero;
-       
-             playerPos = Audio_SoundManager.Instance.player.position;
+        HasPropagated = true; // Set early to prevent reentrancy.
 
-        Room playerRoom = RoomManager.Instance.GetCurrentRoom(playerPos);
+        visitedRooms.Clear();
+
+        var soundManager = Audio_SoundManager.Instance;
+        var player = soundManager.player;
+        var roomManager = RoomManager.Instance;
+        var roomDict = roomManager.dictionary;
+        var sourceRoom = GetSoundRoom();
+        var portalLimit = propagation.portalLimit;
+        var portalOffset = propagation.portalOffset;
+
+        Vector3 playerPos = player.position;
+        Room playerRoom = roomManager.GetCurrentRoom(playerPos);
 
         if (playerRoom != null)
         {
-            float value = 0;
-            propManager.FindPath(GetSoundRoom(), playerRoom, RoomManager.Instance.dictionary, _asset, this, playerPos, out value, debug, propagation.portalLimit, propagation.portalOffset);
+            float occlusionToPlayer = 0f;
+
+            propManager.FindPath(
+                sourceRoom,
+                playerRoom,
+                roomDict,
+                _asset,
+                this,
+                playerPos,
+                out occlusionToPlayer,
+                debug,
+                portalLimit,
+                portalOffset
+            );
+
             visitedRooms.Add(playerRoom);
-            ApplyOcclusion(value / 2f);
+            ApplyOcclusion(occlusionToPlayer * 0.5f);
         }
 
         SeekListeners();
-        foreach (var listener in foundListeners)
+
+        int listenerCount = foundListeners.Count;
+        for (int i = 0; i < listenerCount; i++)
         {
+            var listener = foundListeners[i];
+
+            if (listener == null || listener.room == null)
+                continue;
+
             Room listenerRoom = listener.room;
-            if (!listenerRoomCache.TryGetValue(listener, out listenerRoom) || listenerRoom != listener.room)
+            Vector3 listenerPos = listener.transform.position;
+
+            var key = (sourceRoom, listenerRoom);
+            CachedPath cached;
+            bool pathNeedsUpdate = true;
+
+            if (sharedPathCache.TryGetValue(key, out cached))
             {
-                listenerRoomCache[listener] = listener.room;
+                if (listenerRoom == cached.lastListenerRoom && sourceRoom == cached.lastSourceRoom)
+                {
+                    float distSqr = (listenerPos - cached.lastListenerPosition).sqrMagnitude;
+                    pathNeedsUpdate = distSqr > 0.25f; // 0.5 * 0.5
+                }
             }
 
-            if (listenerRoom != null)
+            if (pathNeedsUpdate)
             {
-                float value = 0;
-                propManager.FindPath(GetSoundRoom(), listenerRoom, RoomManager.Instance.dictionary, _asset, this, listener.transform.position,  out value,  debug, propagation.portalLimit, propagation.portalOffset);
+                var path = propManager.FindPath(
+                    sourceRoom,
+                    listenerRoom,
+                    roomDict,
+                    _asset,
+                    this,
+                    listenerPos,
+                    out float occlusion,
+                    debug,
+                    portalLimit,
+                    portalOffset
+                );
 
-                ApplySound(listener, value);
+                cached = new CachedPath
+                {
+                    path = path,
+                    occlusion = occlusion,
+                    lastListenerPosition = listenerPos,
+                    lastListenerRoom = listenerRoom,
+                    lastSourceRoom = sourceRoom
+                };
+
+                sharedPathCache[key] = cached;
             }
+
+            ApplySound(listener, cached.occlusion);
         }
-
-        HasPropagated = true;
     }
+
 
     private void ApplyOcclusion(float targetValue)
     {
@@ -472,8 +545,8 @@ public class Audio_Source : MonoBehaviour
         if (isPlayAwake)
         {
             transitionTimer = 0f;
-            appliedVolume = _targetOcclusion;
-            _soundInstance.setParameterByName("SFX_Occlusion", appliedVolume);
+            appliedOcclusion = _targetOcclusion;
+            _soundInstance.setParameterByName("SFX_Occlusion", appliedOcclusion);
             isPlayAwake = false;
         }
         else
@@ -481,8 +554,8 @@ public class Audio_Source : MonoBehaviour
             transitionTimer += Time.deltaTime;
             float t = Mathf.Clamp01(transitionTimer / transitionDuration);
             float easedT = EaseInOut(t);
-            appliedVolume = Mathf.Lerp(appliedVolume, _targetOcclusion, easedT);
-            _soundInstance.setParameterByName("SFX_Occlusion", appliedVolume);
+            appliedOcclusion = Mathf.Lerp(appliedOcclusion, _targetOcclusion, easedT);
+            _soundInstance.setParameterByName("SFX_Occlusion", appliedOcclusion);
         }
     }
     #endregion
@@ -572,7 +645,11 @@ public class Audio_Source : MonoBehaviour
                 UnityEngine.Debug.LogWarning("Found null RoomListener in RoomManager._roomListener.");
                 continue;
             }
+<<<<<<< Updated upstream
 
+=======
+        
+>>>>>>> Stashed changes
             roomListener.OnSourceEnter += OnRoomEnter;
             roomListener.OnSourceExit += OnRoomExit;
         }

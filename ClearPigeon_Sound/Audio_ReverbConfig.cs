@@ -18,7 +18,7 @@ public class Audio_ReverbConfig : ScriptableObject
     }
 }
 
-
+#if UNITY_EDITOR
 [CustomEditor(typeof(Audio_ReverbConfig))]
 public class ReverbPresetConfigEditor : Editor
 {
@@ -56,3 +56,5 @@ public class ReverbPresetConfigEditor : Editor
         serializedObject.ApplyModifiedProperties();
     }
 }
+
+#endif
