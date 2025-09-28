@@ -16,10 +16,9 @@ namespace ClearPigeon.Audio
     {
         [SerializeField] private Material _roomCellMaterial;
         [SerializeField] private Material _portalMaterial;
-        [SerializeField] private Material _roomCellBakedMaterial;
-        [SerializeField] private Material _portalBakedMaterial;
 
-        [SerializeField] private int _roomLayerIndex = 9;
+
+        [SerializeField] private int _roomLayerIndex = 11;
         [SerializeField] private int _defaultLayerIndex = 0; // Default layer to reset to
 
         public Dictionary<Room, RoomData> dictionary = new Dictionary<Room, RoomData>();
@@ -45,13 +44,13 @@ namespace ClearPigeon.Audio
 
         // Game manager instance
         public static RoomManager Instance;
-      
-        private void OnEnable()
+
+        private void Awake()
         {
             if (Instance == null)
             {
                 Instance = this;
-             
+
             }
             else if (Instance != this)
             {
@@ -69,16 +68,14 @@ namespace ClearPigeon.Audio
         public void InitializeRooms()
         {
             activeScene = SceneManager.GetActiveScene();
-       
-             roomIdDict = new Dictionary<string, Room>();
+
+            roomIdDict = new Dictionary<string, Room>();
             _rooms = SceneHelper.GetAllComponentsInScene<Room>(activeScene);
             PortalList = SceneHelper.GetAllComponentsInScene<RoomPortal>(activeScene);
-           
+
 
             List<RoomData> roomDataList = new List<RoomData>(); // Store room data
             List<Room> initializedRooms = new List<Room>(); // Store initialized rooms
-
-        
 
             // Initialize all other rooms
             for (int i = 0; i < _rooms.Count; i++)
@@ -92,13 +89,6 @@ namespace ClearPigeon.Audio
                 if (!_rooms[i].GetComponent<RoomListener>())
                 {
                     _rooms[i].AddComponent<RoomListener>();
-
-                }
-                // Set the material for the room's renderer (if it exists)
-                Renderer renderer = _rooms[i].GetComponent<Renderer>();
-                if (renderer != null)
-                {
-                    renderer.material = _roomCellBakedMaterial;
                 }
 
                 // Cache the bounds of the room
@@ -124,14 +114,12 @@ namespace ClearPigeon.Audio
                 // Log if a specific room is being initialized
                 if (_debug)
                 {
-                    
-                        Debug.Log($"Room {_rooms[i].roomName} initialized and added to dictionary");
-                    
+                    Debug.Log($"Room {_rooms[i].roomName} initialized and added to dictionary");
                 }
                 // If room name is empty, print a warning
                 if (string.IsNullOrEmpty(_rooms[i].roomName))
                 {
-                    if (_debug) Debug.Log("___ENTER ROOM NAME, config = " + _rooms[i].config + ", YOU'LL THANK ME LATER___");
+                    if (_debug) Debug.LogError("___ENTER ROOM NAME, config = " + _rooms[i].config + ", YOU'LL THANK ME LATER___");
                 }
                 else
                 {
@@ -371,17 +359,8 @@ namespace ClearPigeon.Audio
                     // Log the connection between rooms
                     Debug.Log(roomData1.room.gameObject.name + " and " + roomData2.room.gameObject.name);
 
-                    // Set the material for the room's renderer (if it exists)
-                    Renderer renderer = portal.GetComponent<Renderer>();
-                    if (renderer != null)
-                    {
-                        renderer.material = _portalBakedMaterial;
-
-                    }
                     portal.built = true;
-
                 }
-
             }
             else
             {
@@ -390,49 +369,36 @@ namespace ClearPigeon.Audio
 
             for (int i = 0; i < roomList.Count; i++)
             {
-                for (int j = i + 1; j < roomList.Count; j++) // Avoid duplicate checks
+                Room room1 = roomList[i];
+                RoomData data1 = dictionary[room1];
+
+                for (int j = i + 1; j < roomList.Count; j++)
                 {
-                    Room room1 = roomList[i];
                     Room room2 = roomList[j];
+                    RoomData data2 = dictionary[room2];
 
-                    // Ensure rooms exist in the dictionary
-                    if (!dictionary.ContainsKey(room1) || !dictionary.ContainsKey(room2))
-                        continue;
+                    // Skip if rooms are not in the same layer
+                    bool crossLayerAllowed = false;
 
-                    RoomData roomData1 = dictionary[room1];
-                    RoomData roomData2 = dictionary[room2];
-
-                    // Get colliders and check bounds intersection
-                    Collider collider1 = room1.GetComponent<Collider>();
-                    Collider collider2 = room2.GetComponent<Collider>();
-
-                    if (collider1 == null || collider2 == null)
-                        continue;
-
-                    Bounds bounds1 = collider1.bounds;
-                    Bounds bounds2 = collider2.bounds;
-
-                    if (bounds1.Intersects(bounds2)) // Check if rooms share boundaries
+                    // Allow cross-layer only if there is a portal connecting them
+                    if (portalList.Any(p => (p.room1 == room1 && p.room2 == room2) || (p.room1 == room2 && p.room2 == room1)))
                     {
-                        if (!roomData1.neighbors.Contains(room2))
-                        {
-                            roomData1.neighbors.Add(room2);
-                            room1.roomData = roomData1;
-                            if (_debug)
-                                Debug.Log($"Added {room2.name} as neighbor of {room1.name} (shared wall-based).");
-                        }
+                        crossLayerAllowed = true;
+                    }
 
-                        if (!roomData2.neighbors.Contains(room1))
-                        {
-                            roomData2.neighbors.Add(room1);
-                            room2.roomData = roomData2;
-                            if (_debug)
-                                Debug.Log($"Added {room1.name} as neighbor of {room2.name} (shared wall-based).");
-                        }
+                    if (room1.roomLayer != room2.roomLayer && !crossLayerAllowed)
+                        continue;
+
+                    // Check bounds intersection
+                    Collider c1 = room1.GetComponent<Collider>();
+                    Collider c2 = room2.GetComponent<Collider>();
+                    if (c1 != null && c2 != null && c1.bounds.Intersects(c2.bounds))
+                    {
+                        if (!data1.neighbors.Contains(room2)) data1.neighbors.Add(room2);
+                        if (!data2.neighbors.Contains(room1)) data2.neighbors.Add(room1);
                     }
                 }
             }
-           
 
             Debug.Log($"Total rooms initialized: {dictionary.Count}");
 
@@ -478,7 +444,7 @@ namespace ClearPigeon.Audio
                         DestroyImmediate(roomcells);
                     }
                 }
-             
+
                 // **Mark room as uninitialized**
                 room.isInitialized = false;
             }
@@ -541,18 +507,29 @@ namespace ClearPigeon.Audio
         }
 
 
-        public Room GetCurrentRoom(Vector3 _objects)
+        public Room GetCurrentRoom(Vector3 position)
         {
-            // Check the cached bounds for each room
+            Room bestRoom = null;
+
             foreach (var roomEntry in roomBoundsCache)
             {
-                if (roomEntry.Value.Contains(_objects)) // Check if the object is inside the cached bounds
+                if (roomEntry.Value.Contains(position))
                 {
-                    return roomEntry.Key;
+                    Room candidate = roomEntry.Key;
+
+                    // If no best room yet, or this one has higher priority → take it
+                    if (bestRoom == null || candidate.roomLayer > bestRoom.roomLayer)
+                    {
+                        bestRoom = candidate;
+                    }
                 }
             }
-            return null;
+
+
+            // Fallback to global room if nothing found
+            return bestRoom ?? _globalRoom;
         }
+
 
         public bool TryGetRoomByInstanceId(int instanceId, out Room room)
         {
@@ -576,11 +553,11 @@ namespace ClearPigeon.Audio
         }
         public bool TryGetRoomById(string instanceId, out Room room)
         {
-           return roomIdDict.TryGetValue(instanceId, out room);
+            return roomIdDict.TryGetValue(instanceId, out room);
 
         }
 
-    
+
     }
 
 

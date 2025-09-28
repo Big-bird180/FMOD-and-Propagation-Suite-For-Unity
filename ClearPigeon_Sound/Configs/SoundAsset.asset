@@ -19,11 +19,11 @@ MonoBehaviour:
   aiRangeMax: 1
   eventReference:
     Guid:
-      Data1: 864900277
-      Data2: 1198082494
-      Data3: -559234429
-      Data4: -664589259
-    Path: event:/Music_Clair-De-Lune(vinyl)
+      Data1: 1904689945
+      Data2: 1193774103
+      Data3: 38138284
+      Data4: -1545009774
+    Path: event:/SFX_TestRain 2
   volume: 1
   volumeMod: 1.88
   playerVolumeMin: 1
@@ -33,28 +33,3 @@ MonoBehaviour:
   rangeMax: 45.4
   attenuation: 5
   blockability: 0.52
-  audio_SoundInfo:
-    source: {fileID: 0}
-    asset: {fileID: 0}
-    owner: {fileID: 0}
-    instigator: {fileID: 0}
-    ignore: {fileID: 0}
-    distance: 0
-    height: 0
-    attenuation: 0
-    gain: 0
-    volume: 0
-    pitch: 0
-    blocking: 0
-    occlusion: 0
-    eavesdropping: 0
-    rangeMin: 0
-    rangeMax: 0
-    AILevelMin: 0
-    AILevelMax: 0
-    AIFlags: 0
-    portalCount: 0
-    pointCount: 0
-    portals: []
-    points: []
-    anchorPoint: {x: 0, y: 0, z: 0}

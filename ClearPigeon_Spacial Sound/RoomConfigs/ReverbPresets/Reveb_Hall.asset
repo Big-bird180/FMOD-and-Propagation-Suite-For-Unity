@@ -12,17 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: af812307281a3ff4a978aecadf67b63b, type: 3}
   m_Name: Reveb_Hall
   m_EditorClassIdentifier: 
-  Values:
-  - 8
-  - 1
-  - 120
-  - 10000
-  - 0.8
-  - -320
-  - 110
-  - 255
-  - 1
-  - 9000
-  - 50
-  - 1
-  - 0
+  delayMS: 2
+  lowpassHz: 30000
+  reverbMix: 12
+  transitionTime: 0.5

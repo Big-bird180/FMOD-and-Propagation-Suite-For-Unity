@@ -1,5 +1,5 @@
 public enum Audio_PlayPresets
 {
-    Awake,
-    Controlled
+    Awake = 0,
+    Controlled = 1
 }

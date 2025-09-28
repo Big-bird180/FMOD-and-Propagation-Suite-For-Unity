@@ -14,17 +14,18 @@ public class RoomListener : MonoBehaviour
     public Action<Audio_Source> OnSourceActive;
     public Action<Audio_Source> OnSourceExit;
 
-    private Dictionary<int, Audio_SoundListener> listenersInRoom = new Dictionary<int, Audio_SoundListener>();
-    private Dictionary<int, Audio_Source> sourcesInRoom = new Dictionary<int, Audio_Source>();
+    private Dictionary<int, Audio_SoundListener> listenersInRoom = new();
+    private Dictionary<int, Audio_Source> sourcesInRoom = new();
 
     private Collider roomCollider;
     private Room cachedRoom;
 
     // Reusable collections for GC optimization
-    private HashSet<int> tempListenerInsideIds = new HashSet<int>();
-    private HashSet<int> tempSourceInsideIds = new HashSet<int>();
-    private List<int> tempExitedIds = new List<int>();
-    private List<Audio_Source> tempNewEntries = new List<Audio_Source>();
+    private readonly HashSet<int> tempListenerInsideIds = new();
+    private readonly HashSet<int> tempSourceInsideIds = new();
+    private readonly List<int> tempListenerExited = new();
+    private readonly List<int> tempSourceExited = new();
+    private readonly List<Audio_Source> tempNewSources = new();
 
     private void OnEnable()
     {
@@ -34,115 +35,111 @@ public class RoomListener : MonoBehaviour
 
     public void OnPropagateUpdate(bool instant)
     {
-        RefreshListeners(Audio_SoundManager.Instance.activeListeners);
-        RefreshSources(Audio_SoundManager.Instance.sourceList);
+        var activeListeners = Audio_SoundManager.Instance.activeListeners;
+        var allSources = Audio_SoundManager.Instance.sourceList;
+
+        if (activeListeners.Count > 0) RefreshListeners(activeListeners);
+        if (allSources.Count > 0) RefreshSources(allSources);
     }
 
     public void RefreshListeners(List<Audio_SoundListener> allListeners)
     {
-        if (roomCollider == null)
-            return;
+        if (roomCollider == null) return;
 
         tempListenerInsideIds.Clear();
-        tempExitedIds.Clear();
+        tempListenerExited.Clear();
 
         var bounds = roomCollider.bounds;
 
+        // Detect inside listeners
         foreach (var listener in allListeners)
         {
-            int id = listener.GetInstanceID();
-            bool isInside = bounds.Contains(listener.transform.position);
+            int id = listener.GetInstanceID(); 
+            Vector3 pos = listener.transform.position;
+            bool isInside = bounds.min.x <= pos.x && pos.x <= bounds.max.x &&
+                            bounds.min.y <= pos.y && pos.y <= bounds.max.y &&
+                            bounds.min.z <= pos.z && pos.z <= bounds.max.z;
 
-            if (isInside)
+            if (!isInside) continue;
+
+            tempListenerInsideIds.Add(id);
+
+            if (listenersInRoom.TryAdd(id, listener))
             {
-                tempListenerInsideIds.Add(id);
-
-                if (!listenersInRoom.ContainsKey(id))
-                {
-                    listenersInRoom.Add(id, listener);
-                    OnRoomEnter?.Invoke(listener);
-                }
-
-                OnRoomActive?.Invoke(listener);
+                OnRoomEnter?.Invoke(listener);
             }
+
+            OnRoomActive?.Invoke(listener);
         }
 
+        // Detect exited listeners
         foreach (var kvp in listenersInRoom)
         {
             if (!tempListenerInsideIds.Contains(kvp.Key))
-            {
-                OnRoomExit?.Invoke(kvp.Value);
-                tempExitedIds.Add(kvp.Key);
-            }
+                tempListenerExited.Add(kvp.Key);
         }
 
-        foreach (var id in tempExitedIds)
+        foreach (var id in tempListenerExited)
         {
+            if (listenersInRoom.TryGetValue(id, out var listener))
+                OnRoomExit?.Invoke(listener);
+
             listenersInRoom.Remove(id);
         }
     }
 
     public void RefreshSources(List<Audio_Source> allSources)
     {
-        if (roomCollider == null)
-            return;
+        if (roomCollider == null) return;
 
         tempSourceInsideIds.Clear();
-        tempExitedIds.Clear();
-        tempNewEntries.Clear();
+        tempSourceExited.Clear();
+        tempNewSources.Clear();
 
         var bounds = roomCollider.bounds;
 
-        // Detect sources inside
+        // Detect inside sources
         foreach (var source in allSources)
         {
-            int id = source.GetInstanceID();
-            bool isInside = bounds.Contains(source.transform.position);
+          int id = source.GetInstanceID(); 
+            Vector3 pos = source.transform.position;
+            bool isInside = bounds.min.x <= pos.x && pos.x <= bounds.max.x &&
+                            bounds.min.y <= pos.y && pos.y <= bounds.max.y &&
+                            bounds.min.z <= pos.z && pos.z <= bounds.max.z;
 
-            if (isInside)
-            {
-                tempSourceInsideIds.Add(id);
+            if (!isInside) continue;
 
-                if (!sourcesInRoom.ContainsKey(id))
-                {
-                    sourcesInRoom.Add(id, source);
-                    tempNewEntries.Add(source);
-                }
-            }
+            tempSourceInsideIds.Add(id);
+
+            if (sourcesInRoom.TryAdd(id, source))
+                tempNewSources.Add(source);
         }
 
-        // Find exited sources
+        // Detect exited sources
         foreach (var kvp in sourcesInRoom)
         {
             if (!tempSourceInsideIds.Contains(kvp.Key))
-            {
-                tempExitedIds.Add(kvp.Key);
-            }
+                tempSourceExited.Add(kvp.Key);
         }
 
-        // Fire exit events first
-        foreach (var id in tempExitedIds)
+        // Fire exit events
+        foreach (var id in tempSourceExited)
         {
             if (sourcesInRoom.TryGetValue(id, out var source))
-            {
                 OnSourceExit?.Invoke(source);
-                sourcesInRoom.Remove(id);
-            }
+
+            sourcesInRoom.Remove(id);
         }
 
-        // Fire enter events for new sources
-        foreach (var source in tempNewEntries)
-        {
+        // Fire enter events
+        foreach (var source in tempNewSources)
             OnSourceEnter?.Invoke(source, cachedRoom);
-        }
 
-        // Fire active events for all inside sources
+        // Fire active events
         foreach (var id in tempSourceInsideIds)
         {
             if (sourcesInRoom.TryGetValue(id, out var source))
-            {
                 OnSourceActive?.Invoke(source);
-            }
         }
     }
 }

@@ -8,16 +8,18 @@ Shader "Unlit/DEBUG_Shader_RoomCellShader"
     }
     SubShader
     {
-        Tags { "Queue"="Transparent+200" "RenderType"="Overlay" }
+        Tags { "Queue"="Transparent+300" "RenderType"="Transparent" } // Ensure late render
         Blend SrcAlpha OneMinusSrcAlpha
-          Cull Off
+        ZWrite Off                      // Don't write to depth buffer
+ 
+        Cull Off
+
         Pass
         {
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
 
-          
             #include "UnityCG.cginc"
             
             struct appdata_t

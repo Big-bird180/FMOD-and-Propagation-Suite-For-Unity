@@ -2,12 +2,20 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using System;
+
+public enum RoomLayer
+{
+    Outside = 0,   // e.g., global ambience
+    Inside = 1,      // more specific enclosed spaces
+}
+
 namespace ClearPigeon.Audio
 {
     public class Room : MonoBehaviour
     {
         [Header("Room Properties")]
         public RoomConfig config;
+        public RoomLayer roomLayer = RoomLayer.Inside;
         public string roomName;
         public string roomID;
 
@@ -36,8 +44,6 @@ namespace ClearPigeon.Audio
 
         public void Build(RoomData data)
         {
-
-           
             if (!roomListener)
             {
                 roomListener = gameObject.AddComponent<RoomListener>();
@@ -64,8 +70,6 @@ namespace ClearPigeon.Audio
                     }
                 }
             }
-
-
         }
 
         public int CompareTo(Room other)

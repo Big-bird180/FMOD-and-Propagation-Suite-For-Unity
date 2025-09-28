@@ -1,31 +1,29 @@
-using ClearPigeon.Audio;
+﻿using ClearPigeon.Audio;
 
 using FMOD.Studio;
 using FMOD;
 using UnityEngine;
 using System;
 using System.Collections.Generic;
-using System.Collections;
-using UnityEditor;
+using static Unity.VisualScripting.Member;
 
 public class Audio_Source : MonoBehaviour
 {
-
-
     #region Nested Types
     [Serializable]
     public class PropagationSettings
     {
-        public bool enabled = true;
         public bool repropagate;
-        public bool global;
+        [Tooltip("whether the sound source responds to/enters the propagation loop")] public bool global;
+        [Tooltip("The maximum number of portals to traverse until maximum occlusion")]
         public int portalLimit = -1;
+        [Tooltip("how many portals traversed until effects get applied")]
         public int portalOffset = 0;
-        public Room overrideRoom; 
+        public Room overrideRoom;
     }
 
     // Key = tuple of (sourceRoom, listenerRoom)
-    private Dictionary<(Room, Room), CachedPath> sharedPathCache = new Dictionary<(Room, Room), CachedPath>();
+    private Dictionary<RoomPair, CachedPath> sharedPathCache;
 
     private class CachedPath
     {
@@ -36,25 +34,30 @@ public class Audio_Source : MonoBehaviour
         public Room lastSourceRoom;            // Last source room
     }
 
+    private class RoomPairComparer : IEqualityComparer<RoomPair>
+    {
+        public bool Equals(RoomPair a, RoomPair b) =>
+            ReferenceEquals(a.source, b.source) && ReferenceEquals(a.listener, b.listener);
 
+        public int GetHashCode(RoomPair pair) =>
+            (pair.source?.GetHashCode() ?? 0) * 397 ^ (pair.listener?.GetHashCode() ?? 0);
+    }
     #endregion
 
     #region Fields
-    [SerializeField] private Audio_ReverbConfig currentReverbConfig;
-   private Audio_ReverbConfig nextReverbConfig;
-    private readonly Dictionary<EventInstance, DSPHandle> instanceDSPHandles = new();
-
-    [Header("Configuration")]
-    public bool debug;
-    public PropagationSettings propagation;
-
+    private Audio_Asset _lastPlayedAsset;
     [Header("Audio Properties")]
     [SerializeField] private Audio_PlayPresets _playPreset;
     [SerializeField] private Audio_Asset _asset;
     [SerializeField] private GameObject _owner;
     [Range(0, 1)] public float volume = 1f;
-   
-    [SerializeField] private float transitionDuration = 45f;
+
+    [SerializeField, Range(0, 300)] private float transitionDuration = 135;
+    private float _inverseTransitionDuration;
+
+    [Header("Configuration")]
+    public bool debug;
+    public PropagationSettings propagation;
 
     // Internal FMOD instance
     private EventInstance _soundInstance;
@@ -62,22 +65,37 @@ public class Audio_Source : MonoBehaviour
     // Cached data
     private Room soundRoom;
     private PropagationManager propManager;
-    private readonly Dictionary<Audio_SoundListener, Room> listenerRoomCache = new();
     private readonly HashSet<Room> visitedRooms = new();
     private readonly List<Audio_SoundListener> foundListeners = new();
     private float previousVolume = 0f;
+
+    // Cached references for performance
+    private Transform cachedPlayerTransform;
+    private RoomManager cachedRoomManager;
+
     // State
     private Vector3 lastPosition;
-    private float transitionTimer;
     private float _targetOcclusion;
     private float appliedOcclusion;
 
     private bool isPlaying;
     private bool HasPropagated = false;
     private bool isPlayAwake = false;
+    private DSP _delayDSP;
+    private DSP _lowpassDSP;
+    private ChannelGroup _channelGroup;
+
+    private float _targetDelay;
+    private float _targetLowpass;
+    private float _transitionDuration;
+    private float _transitionTimer;
+    private bool _transitionActive;
+
+    private float _currentDelay;
+    private float _currentLowpass;
+
 
     #endregion
-
 
     #region Unity Callbacks
 
@@ -88,17 +106,20 @@ public class Audio_Source : MonoBehaviour
             UnityEngine.Debug.LogError("Audio_Source: _asset is null! Assign an Audio_Asset.", this);
             return;
         }
+        _inverseTransitionDuration = 1f / Mathf.Max(transitionDuration, 0.0001f);
+
+        // Initialize sharedPathCache with comparer
+        sharedPathCache = new Dictionary<RoomPair, CachedPath>(new RoomPairComparer());
 
         OnInitialize();
     }
 
+
     private void FixedUpdate()
     {
         if (!_asset.spacialSound || !_soundInstance.isValid() || !isPlaying) return;
-        if (debug)
-        {
-            ChangeReverbPreset(_soundInstance, currentReverbConfig);
-        }
+
+        // Possibly update sound propagation here if needed, or handled externally.
     }
 
     private void OnDrawGizmosSelected()
@@ -106,16 +127,14 @@ public class Audio_Source : MonoBehaviour
         if (_asset == null) return;
 
         Vector3 position = transform.position;
-      
+
         // Draw RangeMin
         Gizmos.color = new Color(1f, 0f, 0f, 0.5f); // Semi-transparent red
         Gizmos.DrawWireSphere(position, _asset.RangeMin);
 
-
         // Draw RangeMax
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireSphere(position, _asset.RangeMax);
-
     }
 
 #if UNITY_EDITOR
@@ -123,8 +142,6 @@ public class Audio_Source : MonoBehaviour
     {
         Gizmos.DrawIcon(this.transform.position, "/C.P.-Room-Propagation-FMOD-/Gizmos/Audio_Icon.png", true);
     }
-
-
 #endif
 
     #endregion
@@ -136,6 +153,9 @@ public class Audio_Source : MonoBehaviour
         propManager = new PropagationManager();
         SetOwner(_owner ?? gameObject);
 
+        cachedPlayerTransform = FindObjectOfType<ClearPigeon.Entities.Ent_PlayerController>()?.transform;
+        cachedRoomManager = RoomManager.Instance;
+
         if (propagation.overrideRoom != null)
         {
             soundRoom = propagation.overrideRoom;
@@ -146,7 +166,8 @@ public class Audio_Source : MonoBehaviour
 
         Audio_SoundManager.Instance.AddSoundSource(this);
 
-        if(_asset.spacialSound)  RegisterWithRooms(); 
+        if (!propagation.global)
+            RegisterWithRooms();
     }
 
     private void OnDestroy()
@@ -155,26 +176,30 @@ public class Audio_Source : MonoBehaviour
         Reset();
 
         if (Audio_SoundManager.Instance != null)
-        {
             Audio_SoundManager.Instance.RemoveSoundSource(this);
-        }
 
-        if (_asset.spacialSound) UnregisterFromRooms();
+        if (!propagation.global)
+            UnregisterFromRooms();
     }
 
     public void Reset()
     {
-        CleanupDSP();
-        UnityEngine.Debug.Log("PropagationManager reset!");
+        if (debug) UnityEngine.Debug.Log("PropagationManager reset!");
     }
 
     public void SetSoundAsset(Audio_Asset asset)
     {
         _asset = asset;
+
         _soundInstance = FMODUnity.RuntimeManager.CreateInstance(_asset.eventReference);
 
         _soundInstance.setProperty(EVENT_PROPERTY.MINIMUM_DISTANCE, _asset.RangeMin);
         _soundInstance.setProperty(EVENT_PROPERTY.MAXIMUM_DISTANCE, _asset.RangeMax);
+    }
+
+    public Audio_Asset GetSoundAsset()
+    {
+        return _asset;
     }
 
     private void SetSoundPreset(Audio_PlayPresets preset)
@@ -192,21 +217,58 @@ public class Audio_Source : MonoBehaviour
 
     #region Playback
 
-    public void StartPlay() => Play();
     public void Play()
     {
         if (_asset == null || !_soundInstance.isValid()) return;
         isPlaying = true;
 
-        _soundInstance.start();
-        UnityEngine.Debug.Log("Sound Started!");
+        if (_asset == null && _soundInstance.isValid()) _soundInstance.release();
+//Stop();
+//Reset();
+
+_soundInstance.start();
+        if (debug) UnityEngine.Debug.Log("Sound Started!");
         SetVolume(volume);
 
-        if (currentReverbConfig != null)
-            ChangeReverbPreset(_soundInstance, currentReverbConfig);
-
-        HasPropagated = false;
+        if (_asset.spacialSound) HasPropagated = false;
     }
+
+    public void PlaySoundOnce(Audio_Asset newAsset)
+    {
+        if (this == null || newAsset == null)
+            return;
+
+        if (_lastPlayedAsset == newAsset && isPlaying)
+            return;
+
+        Stop();
+        SetSoundAsset(newAsset);
+        Play();
+
+        _lastPlayedAsset = newAsset;
+    }
+
+    public void PlayFromPosition(Audio_Asset asset, int startTimeMs)
+    {
+        if (asset == null) return;
+
+        Stop();
+
+        SetSoundAsset(asset); // <- Must happen first to create a fresh instance
+
+        // Now apply timeline offset BEFORE starting
+        if (_soundInstance.isValid())
+            _soundInstance.setTimelinePosition(startTimeMs);
+
+        Play();
+        isPlaying = true;
+
+        if (debug) UnityEngine.Debug.Log($"Started {asset.name} from {startTimeMs}ms");
+        _lastPlayedAsset = asset;
+
+    }
+
+
 
 
     public void SetOwner(GameObject owner)
@@ -219,13 +281,11 @@ public class Audio_Source : MonoBehaviour
         if (!isPlaying || !_soundInstance.isValid())
             return;
 
-        CleanupDSP();
-
         _soundInstance.stop(STOP_MODE.IMMEDIATE);
         _soundInstance.release();
 
         isPlaying = false;
-        UnityEngine.Debug.Log("Sound Stopped and Released!");
+        if (debug) UnityEngine.Debug.Log("Sound Stopped and Released!");
 
         Reset();
     }
@@ -234,141 +294,20 @@ public class Audio_Source : MonoBehaviour
     {
         volume = Mathf.Clamp01(newVolume);
         if (_soundInstance.isValid())
-        {
             _soundInstance.setVolume(volume);
-        }
     }
     #endregion
 
-    #region Reverb DSP
+    #region DSPs
 
-    public void ChangeReverbPreset(EventInstance instance, Audio_ReverbConfig newConfig, float fadeDuration = 0.45f)
-    {
-        if (newConfig == null) return;
-
-        if (!instanceDSPHandles.TryGetValue(instance, out var handle) || !handle.Dsp.hasHandle())
-        {
-            var dsp = CreateDSPForInstance(instance);
-            if (!dsp.hasHandle())
-            {
-                UnityEngine.Debug.LogWarning("Failed to create or attach DSP.");
-                return;
-            }
-
-            handle = new DSPHandle
-            {
-                Dsp = dsp,
-                CurrentConfig = newConfig,
-                FadeCoroutine = null
-            };
-
-            instanceDSPHandles[instance] = handle;
-            ApplyReverbPresetToDSP(handle.Dsp, newConfig);
-            handle.Dsp.setBypass(false); // Ensure DSP is active
-            return;
-        }
-
-        if (handle.CurrentConfig == newConfig)
-            return;
-
-        // Ensure DSP is active in case it was bypassed earlier
-        handle.Dsp.setBypass(false);
-
-        // Stop any existing fade coroutine
-        if (handle.FadeCoroutine != null)
-            StopCoroutine(handle.FadeCoroutine);
-
-        handle.FadeCoroutine = StartCoroutine(FadeReverbPreset(handle, newConfig, fadeDuration));
-    }
-
-    private DSP CreateDSPForInstance(EventInstance instance)
-    {
-        if (FMODUnity.RuntimeManager.CoreSystem.createDSPByType(DSP_TYPE.SFXREVERB, out var dsp) != FMOD.RESULT.OK)
-            return default;
-
-        if (instance.getChannelGroup(out var channelGroup) != FMOD.RESULT.OK || !channelGroup.hasHandle())
-        {
-            dsp.release(); // Don't leak
-            return default;
-        }
-
-        if (channelGroup.addDSP(FMOD.CHANNELCONTROL_DSP_INDEX.HEAD, dsp) != FMOD.RESULT.OK)
-        {
-            dsp.release();
-            return default;
-        }
-
-        return dsp;
-    }
-
-    private IEnumerator FadeReverbPreset(DSPHandle handle, Audio_ReverbConfig newConfig, float duration)
-    {
-        var dsp = handle.Dsp;
-        var fromConfig = handle.CurrentConfig;
-        float elapsed = 0f;
-
-        if (fromConfig == null || newConfig == null || fromConfig.Values.Length != 13 || newConfig.Values.Length != 13)
-            yield break;
-
-        while (elapsed < duration)
-        {
-            float t = elapsed / duration;
-            float eased = EaseInOut(t);
-
-            for (int i = 0; i < fromConfig.Values.Length; i++)
-            {
-                float lerpedValue = Mathf.Lerp(fromConfig.Values[i], newConfig.Values[i], eased);
-                dsp.setParameterFloat(i, lerpedValue);
-            }
-
-            elapsed += Time.deltaTime;
-            yield return null;
-        }
-
-        ApplyReverbPresetToDSP(dsp, newConfig);
-        handle.CurrentConfig = newConfig;
-        handle.FadeCoroutine = null;
-    }
-
-    private void ApplyReverbPresetToDSP(DSP dsp, Audio_ReverbConfig config)
-    {
-        if (config == null || config.Values == null || config.Values.Length != 13)
-        {
-            UnityEngine.Debug.LogWarning("Invalid reverb config.");
-            return;
-        }
-
-        for (int i = 0; i < config.Values.Length; i++)
-        {
-            dsp.setParameterFloat(i, config.Values[i]);
-        }
-    }
-
-   
-    /// Bypasses the DSP instead of destroying it. This allows quick reactivation later.
-
-    public void CleanupDSP()
-    {
-        if (!instanceDSPHandles.TryGetValue(_soundInstance, out var handle)) return;
-
-        // Simply bypass the DSP instead of removing/releasing it
-        if (handle.Dsp.hasHandle())
-        {
-            handle.Dsp.setBypass(true);
-        }
-
-        instanceDSPHandles.Remove(_soundInstance);
-    }
     #endregion
 
     #region Propagation
 
     public void OnUpdate(float deltaTime)
     {
-        if (this == null || Audio_SoundManager.Instance == null) return;
-
-        if (!propagation.enabled || !_asset.spacialSound)
-            return;
+        if (Audio_SoundManager.Instance == null) return;
+        if (this == null || gameObject == null) return;
 
         if (isPlaying && !HasPropagated)
         {
@@ -377,32 +316,30 @@ public class Audio_Source : MonoBehaviour
             return;
         }
 
-        if (propagation.repropagate || _asset.loop)
+        if ((propagation.repropagate || _asset.loop) && _asset.spacialSound)
         {
             HasPropagated = false;
             Repropagate();
         }
 
-        if (_asset.spacialSound)
+        Vector3 currentPosition = Vector3.zero;
+        if (this != null) currentPosition = transform.position;
+
+
+        if (currentPosition != lastPosition && _soundInstance.isValid())
         {
-            Vector3 currentPosition = Vector3.zero;
-            if (transform != null) currentPosition = transform.position;
-
-            if (currentPosition != lastPosition)
+            _soundInstance.set3DAttributes(new FMOD.ATTRIBUTES_3D
             {
-                _soundInstance.set3DAttributes(new FMOD.ATTRIBUTES_3D
-                {
-                    position = FMODUnity.RuntimeUtils.ToFMODVector(currentPosition),
-                    velocity = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.zero),
-                    forward = FMODUnity.RuntimeUtils.ToFMODVector(transform.forward),
-                    up = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.up)
-                });
+                position = FMODUnity.RuntimeUtils.ToFMODVector(currentPosition),
+                velocity = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.zero),
+                forward = FMODUnity.RuntimeUtils.ToFMODVector(transform.forward),
+                up = FMODUnity.RuntimeUtils.ToFMODVector(Vector3.up)
+            });
 
-                lastPosition = currentPosition;
-            }
+            lastPosition = currentPosition;
         }
 
-        if(previousVolume != volume)
+        if (previousVolume != volume)
         {
             SetVolume(volume);
             previousVolume = volume;
@@ -413,17 +350,15 @@ public class Audio_Source : MonoBehaviour
 
     public void OnPropagateUpdate(bool instant)
     {
-        if (!propagation.enabled || !isPlaying || HasPropagated) return;
-       
+        if (!_asset.spacialSound || !isPlaying || HasPropagated) return;
+
         Propagate();
         HasPropagated = true;
-       
-        
     }
 
     public void Propagate()
     {
-        if (propagation.enabled)
+        if (_asset.spacialSound)
         {
             OnPropagate();
         }
@@ -431,7 +366,7 @@ public class Audio_Source : MonoBehaviour
 
     public void Repropagate()
     {
-        if (propagation.enabled && propagation.repropagate && isPlaying && _asset != null)
+        if (_asset.spacialSound && propagation.repropagate && isPlaying && _asset != null)
         {
             OnPropagate();
         }
@@ -439,23 +374,33 @@ public class Audio_Source : MonoBehaviour
 
     private void OnPropagate()
     {
-        if (this == null || !gameObject.activeInHierarchy || HasPropagated)
+        if (!gameObject.activeInHierarchy || HasPropagated)
             return;
 
         HasPropagated = true; // Set early to prevent reentrancy.
-
         visitedRooms.Clear();
 
-        var soundManager = Audio_SoundManager.Instance;
-        var player = soundManager.player;
-        var roomManager = RoomManager.Instance;
-        var roomDict = roomManager.dictionary;
+        if (cachedPlayerTransform == null || cachedRoomManager == null)
+            return;
+
+        var roomDict = cachedRoomManager.dictionary;
         var sourceRoom = GetSoundRoom();
         var portalLimit = propagation.portalLimit;
         var portalOffset = propagation.portalOffset;
 
-        Vector3 playerPos = player.position;
-        Room playerRoom = roomManager.GetCurrentRoom(playerPos);
+        Vector3 playerPos = cachedPlayerTransform.position;
+        Room playerRoom = Audio_SoundManager.Instance.playerRoom;
+
+        SeekListeners();
+
+        bool playerInRange = playerRoom != null &&
+                             (playerPos - transform.position).sqrMagnitude <= _asset.RangeMax * _asset.RangeMax;
+
+        if (!playerInRange && foundListeners.Count == 0)
+        {
+            ApplyOcclusion(1f); // Full occlusion or default value
+            return;
+        }
 
         if (playerRoom != null)
         {
@@ -478,8 +423,6 @@ public class Audio_Source : MonoBehaviour
             ApplyOcclusion(occlusionToPlayer * 0.5f);
         }
 
-        SeekListeners();
-
         int listenerCount = foundListeners.Count;
         for (int i = 0; i < listenerCount; i++)
         {
@@ -491,16 +434,29 @@ public class Audio_Source : MonoBehaviour
             Room listenerRoom = listener.room;
             Vector3 listenerPos = listener.transform.position;
 
-            var key = (sourceRoom, listenerRoom);
-            CachedPath cached;
+            var key = new RoomPair(sourceRoom, listenerRoom);
+            if (!sharedPathCache.TryGetValue(key, out CachedPath cached))
+            {
+                cached = null;
+            }
+
             bool pathNeedsUpdate = true;
 
-            if (sharedPathCache.TryGetValue(key, out cached))
+            if (cached != null)
             {
                 if (listenerRoom == cached.lastListenerRoom && sourceRoom == cached.lastSourceRoom)
                 {
-                    float distSqr = (listenerPos - cached.lastListenerPosition).sqrMagnitude;
-                    pathNeedsUpdate = distSqr > 0.25f; // 0.5 * 0.5
+                    if (!listener.transform.hasChanged && !transform.hasChanged)
+                    {
+                        pathNeedsUpdate = false;
+                        listener.transform.hasChanged = false;
+                        transform.hasChanged = false;
+                    }
+                    else
+                    {
+                        float distSqr = (listenerPos - cached.lastListenerPosition).sqrMagnitude;
+                        pathNeedsUpdate = distSqr > 0.25f;
+                    }
                 }
             }
 
@@ -544,20 +500,22 @@ public class Audio_Source : MonoBehaviour
 
         if (isPlayAwake)
         {
-            transitionTimer = 0f;
+            // Immediate set on first play
             appliedOcclusion = _targetOcclusion;
             _soundInstance.setParameterByName("SFX_Occlusion", appliedOcclusion);
             isPlayAwake = false;
+            return;
         }
-        else
+
+        // Smoothly approach target occlusion using MoveTowards for stable convergence
+        float step = Audio_SoundManager.Instance.tickRate / Mathf.Max(transitionDuration, 0.0001f);
+        if (!Mathf.Approximately(appliedOcclusion, _targetOcclusion))
         {
-            transitionTimer += Time.deltaTime;
-            float t = Mathf.Clamp01(transitionTimer / transitionDuration);
-            float easedT = EaseInOut(t);
-            appliedOcclusion = Mathf.Lerp(appliedOcclusion, _targetOcclusion, easedT);
+            appliedOcclusion = Mathf.MoveTowards(appliedOcclusion, _targetOcclusion, step);
             _soundInstance.setParameterByName("SFX_Occlusion", appliedOcclusion);
         }
     }
+
     #endregion
 
     #region AI & Helpers
@@ -581,17 +539,12 @@ public class Audio_Source : MonoBehaviour
         }
     }
 
-    private float EaseInOut(float t) => t * t * (3f - 2f * t); // Smoothstep
-
     public Room GetSoundRoom()
     {
-        if (this == null)
-            return null;
-
         if (propagation.overrideRoom != null)
             return propagation.overrideRoom;
 
-        Room currentRoom = RoomManager.Instance.GetCurrentRoom(transform.position);
+        Room currentRoom = cachedRoomManager?.GetCurrentRoom(transform.position);
         if (currentRoom != null)
             soundRoom = currentRoom;
 
@@ -602,7 +555,7 @@ public class Audio_Source : MonoBehaviour
     {
         if (!_soundInstance.isValid())
         {
-            UnityEngine.Debug.LogWarning($"Audio_Source: Sound instance is invalid.", this);
+            if (debug) UnityEngine.Debug.LogWarning($"Audio_Source: Sound instance is invalid.", this);
             return;
         }
 
@@ -618,7 +571,7 @@ public class Audio_Source : MonoBehaviour
     {
         if (!_soundInstance.isValid())
         {
-            UnityEngine.Debug.LogWarning($"Audio_Source: Sound instance is invalid.", this);
+            if (debug) UnityEngine.Debug.LogWarning($"Audio_Source: Sound instance is invalid.", this);
             return;
         }
 
@@ -632,24 +585,17 @@ public class Audio_Source : MonoBehaviour
 
     private void RegisterWithRooms()
     {
-        var manager = RoomManager.Instance;
-       
-
-        var listeners = manager._roomListener;
-       
+        var listeners = cachedRoomManager?._roomListener;
+        if (listeners == null) return;
 
         foreach (var roomListener in listeners)
         {
             if (roomListener == null)
             {
-                UnityEngine.Debug.LogWarning("Found null RoomListener in RoomManager._roomListener.");
+                if (debug) UnityEngine.Debug.LogWarning("Found null RoomListener in RoomManager._roomListener.");
                 continue;
             }
-<<<<<<< Updated upstream
 
-=======
-        
->>>>>>> Stashed changes
             roomListener.OnSourceEnter += OnRoomEnter;
             roomListener.OnSourceExit += OnRoomExit;
         }
@@ -657,7 +603,10 @@ public class Audio_Source : MonoBehaviour
 
     private void UnregisterFromRooms()
     {
-        foreach (var roomListener in RoomManager.Instance?._roomListener)
+        var listeners = cachedRoomManager?._roomListener;
+        if (listeners == null) return;
+
+        foreach (var roomListener in listeners)
         {
             roomListener.OnSourceEnter -= OnRoomEnter;
             roomListener.OnSourceExit -= OnRoomExit;
@@ -669,45 +618,42 @@ public class Audio_Source : MonoBehaviour
         if (source == this)
             soundRoom = room;
 
-        var newReverbConfig = soundRoom?.config.roomReverbPreset;
-
-        // Only change if the new config is different
-        if (newReverbConfig != null && newReverbConfig != currentReverbConfig)
-        {
-            ChangeReverbPreset(_soundInstance, newReverbConfig);
-            currentReverbConfig = newReverbConfig; // Update tracker
-        }
-
         if (debug)
             UnityEngine.Debug.Log($"{name} entered room: {soundRoom?.name}");
     }
-
 
     private void OnRoomExit(Audio_Source source)
     {
         if (source == this)
         {
-            if (RoomManager.Instance.GetCurrentRoom(transform.position) != soundRoom)
+            if (cachedRoomManager?.GetCurrentRoom(transform.position) != soundRoom)
             {
                 if (debug) UnityEngine.Debug.Log($"{name} exited room: {soundRoom?.name}");
                 soundRoom = null;
             }
         }
     }
-
     #endregion
 
     #region Saving and Loading
 
-    // Add save/load methods here if needed in future
+    public struct RoomPair : IEquatable<RoomPair>
+    {
+        public Room source;
+        public Room listener;
+
+        public RoomPair(Room source, Room listener)
+        {
+            this.source = source;
+            this.listener = listener;
+        }
+
+        public bool Equals(RoomPair other) =>
+            ReferenceEquals(source, other.source) && ReferenceEquals(listener, other.listener);
+
+        public override int GetHashCode() =>
+            (source?.GetHashCode() ?? 0) * 397 ^ (listener?.GetHashCode() ?? 0);
+    }
 
     #endregion
-}
-
-
-public class DSPHandle
-{
-    public DSP Dsp;
-    public Audio_ReverbConfig CurrentConfig;
-    public Coroutine FadeCoroutine;
 }

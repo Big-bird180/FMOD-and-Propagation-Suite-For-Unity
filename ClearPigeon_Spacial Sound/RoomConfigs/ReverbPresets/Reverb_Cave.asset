@@ -12,17 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: af812307281a3ff4a978aecadf67b63b, type: 3}
   m_Name: Reverb_Cave
   m_EditorClassIdentifier: 
-  Values:
-  - 22
-  - 1
-  - 800
-  - 1166.03
-  - -111
-  - 120
-  - 120
-  - 120
-  - 8
-  - 3000
-  - 90
-  - 6
-  - -8
+  delayMS: 213
+  lowpassHz: 3000
+  reverbMix: 1
+  transitionTime: 0.5

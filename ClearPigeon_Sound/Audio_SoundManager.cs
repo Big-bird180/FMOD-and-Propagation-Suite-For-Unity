@@ -1,9 +1,10 @@
 using System;
-using System.Collections.Generic;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using ClearPigeon.Audio;
-
+using FMOD.Studio;
+using FMODUnity;
 public class Audio_SoundManager : MonoBehaviour
 {
     public static Audio_SoundManager Instance { get; private set; }
@@ -11,123 +12,126 @@ public class Audio_SoundManager : MonoBehaviour
     public static event Action<bool> OnPropagationUpdate;
     public static event Action<float> OnUpdate;
 
-    public List<Audio_Source> sourceList = new();
-    public List<Audio_SoundListener> activeListeners = new();
-    public Transform player => GameObject.Find("Player").transform;
+    public readonly List<Audio_Source> sourceList = new();
+    public readonly List<Audio_SoundListener> activeListeners = new();
+    private readonly HashSet<Audio_SoundListener> _sharedListenerCache = new(); // reused to avoid GC
 
+    public Transform Player => _player ??= GameObject.Find("Player")?.transform;
+    public Transform _player;
+    public Room playerRoom;
+    private Room oldPlayerRoom;
 
-    private int SoundSourceCount => sourceList.Count;
-    private int SoundListenerCount => activeListeners.Count;
-
-
-    private float nextTickTime;
-    public float tickRate = 1f / 10f;
+    //Tick system
+    public float tickRate = 0.1f; // 10Hz
     public static float TickDeltaTime { get; private set; }
+
+    //Reverb
+    private float _nextTickTime;
+    public EventReference reverbReference;
+    public EventInstance reverbInstance;
+    
+
 
     private void Awake()
     {
-        TickDeltaTime = tickRate;
-        nextTickTime = Time.time + 0.01f;
         if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
-<<<<<<< Updated upstream
-
+            return;
         }
-        else Instance = this;
-        foreach (var room in RoomManager.Instance._roomListener)
-        {
-            OnPropagationUpdate += room.OnPropagateUpdate;
-        }
-=======
->>>>>>> Stashed changes
 
-        }
-        else
-        {
-            Instance = this;
-        }
-        StartCoroutine(Start());
+        Instance = this;
+        TickDeltaTime = tickRate;
+        _nextTickTime = Time.time + 0.01f;
+        reverbInstance = FMODUnity.RuntimeManager.CreateInstance(reverbReference);
+        reverbInstance.start();
 
-
-        //InitializeReverbDSPs();
-
+        StartCoroutine(WaitForRoomManager());
     }
 
-    private IEnumerator Start()
+    private IEnumerator WaitForRoomManager()
     {
-        // Wait for RoomManager to initialize fully
         yield return new WaitUntil(() => RoomManager.Instance != null && RoomManager.Instance._roomListener != null);
 
         foreach (var room in RoomManager.Instance._roomListener)
-        {
             OnPropagationUpdate += room.OnPropagateUpdate;
-        }
     }
-
 
     private void Update()
     {
-       
+        float time = Time.time;
+        if (time < _nextTickTime) return;
 
-        if (Time.time < nextTickTime) return;
-
-        OnTick();
-        nextTickTime += tickRate;
-
-        if (nextTickTime < Time.time)
-        {
-            nextTickTime = Time.time + tickRate;
-        }
-    }
-
-    private void OnTick()
-    {
         float tickStart = Time.realtimeSinceStartup;
-        UpdatePropagation();
-
+        PerformTick();
         float tickDuration = Time.realtimeSinceStartup - tickStart;
+
+        _nextTickTime += tickRate;
+        if (_nextTickTime < time) // catch-up prevention
+            _nextTickTime = time + tickRate;
+
         if (tickDuration > tickRate)
-        {
-            UnityEngine.Debug.LogWarning($"Tick took too long! Duration: {tickDuration:F4}s");
-        }
+            Debug.LogWarning($"[Audio_SoundManager] Tick took too long! Duration: {tickDuration:F4}s");
     }
 
-
-    public static void UpdatePropagation()
+    private void PerformTick()
     {
-        var manager = Audio_SoundManager.Instance;
-        if (manager.SoundSourceCount <= 0) return;
+        if (sourceList.Count == 0) return;
+
+        // Prune invalid sources before triggering update
+        for (int i = sourceList.Count - 1; i >= 0; i--)
+        {
+            var source = sourceList[i];
+            if (source == null)
+            {
+                sourceList.RemoveAt(i);
+                OnUpdate -= source.OnUpdate; // Prevent dangling delegate reference
+                continue;
+            }
+        }
+        playerRoom = RoomManager.Instance.GetCurrentRoom(Player.transform.position);
+        UpdateReverb();
 
         OnPropagationUpdate?.Invoke(true);
         OnUpdate?.Invoke(TickDeltaTime);
     }
 
+    private void UpdateReverb()
+    {
+        if (oldPlayerRoom != playerRoom)
+        {
+            reverbInstance.setParameterByName("Reverb", (int)playerRoom.config.reverbType);
+            oldPlayerRoom = playerRoom;
+            Debug.Log($"UPDATED REVERB ZONE!! + {playerRoom.config.reverbType}");
+        }
+    }
     public void AddSoundSource(Audio_Source source)
     {
-        if (source.propagation.enabled)
+        if (!sourceList.Contains(source))
         {
-            OnPropagationUpdate += source.OnPropagateUpdate;
+            sourceList.Add(source);
+
+            if (source.GetSoundAsset().spacialSound && !source.propagation.global)
+                OnPropagationUpdate += source.OnPropagateUpdate;
+
             OnUpdate += source.OnUpdate;
         }
-
-        sourceList.Add(source);
     }
 
     public void RemoveSoundSource(Audio_Source source)
     {
-        if (source.propagation.enabled)
+        if (sourceList.Remove(source))
         {
-            OnPropagationUpdate -= source.OnPropagateUpdate;
+            if (source.GetSoundAsset().spacialSound && !source.propagation.global)
+                OnPropagationUpdate -= source.OnPropagateUpdate;
+
             OnUpdate -= source.OnUpdate;
         }
-
-        sourceList.Remove(source);
     }
 
     public void AddSoundListener(Audio_SoundListener listener)
     {
-        if (!activeListeners.Contains(listener))
+        if (listener != null && !activeListeners.Contains(listener))
             activeListeners.Add(listener);
     }
 
@@ -136,22 +140,20 @@ public class Audio_SoundManager : MonoBehaviour
         activeListeners.Remove(listener);
     }
 
-    public int TryGetListeners(Room room, HashSet<Audio_SoundListener> listeners)
+    /// <summary>
+    /// Tries to collect all listeners in the given room. Shared cache is reused to reduce allocations.
+    /// </summary>
+    public int TryGetListeners(Room room, HashSet<Audio_SoundListener> outListeners)
     {
-        listeners.Clear();
-        if (SoundListenerCount <= 0) return 0;
+        outListeners.Clear();
 
         int count = 0;
         foreach (var listener in activeListeners)
         {
-            if (listener.room == room && listeners.Add(listener))
+            if (listener != null && listener.room == room && outListeners.Add(listener))
                 count++;
         }
 
         return count;
     }
-
-
-
-
 }
